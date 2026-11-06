@@ -21,14 +21,14 @@ Nach jeder Arbeitssession:
 
 ### Input vom User
 Der User sagt dir einfach:
-> *"Toby, update dev-status"* oder *"Toby, dokumentiere Session"*
+> *"Toby, update dev-status"* oder *"Toby, dokumentiere Session"* oder *"Toby, mach es bitte"* oder ähnliche Formulierungen
 
 ### Dein Workflow
 
 1. **Lese die Dateien**:
+   - Relevante Quellcode-Dateien (wenn vorhanden)
    - `docs/dev-status.md` (aktueller Status)
    - `.github/copilot-instructions.md` (Gesamtplan)
-   - Relevante Quellcode-Dateien (wenn vorhanden)
 
 2. **Sammle Informationen**:
    - Was wurde in dieser Session implementiert?
