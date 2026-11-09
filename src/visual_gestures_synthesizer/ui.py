@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QLabel,
     QSlider,
+    QComboBox,
 )
 from PySide6.QtGui import QImage, QPixmap, QFont
 from PySide6.QtCore import Qt, QTimer, QSize
@@ -32,6 +33,7 @@ from .config import config
 from .camera import CameraHandler, MockCamera, MEDIAPIPE_AVAILABLE
 from .audio import get_audio_player, init_audio
 from .music_theory import MusicTheory
+from .app_controller import get_game_state, init_game_state, GameMode, ALL_ROOT_NOTES
 
 # Optional MediaPipe import für Type Hints
 if MEDIAPIPE_AVAILABLE:
@@ -149,7 +151,7 @@ def draw_landmarks_on_frame(frame: np.ndarray, hands_result) -> np.ndarray:
                 2
             )
             
-            # Zeichne Verbindungen
+            # Zeichne Verbindungen in WEISS (Skelett-Struktur) ZUERST
             for start, end in HAND_CONNECTIONS:
                 if start < len(hand_landmarks) and end < len(hand_landmarks):
                     start_pos = hand_landmarks[start]
@@ -162,9 +164,10 @@ def draw_landmarks_on_frame(frame: np.ndarray, hands_result) -> np.ndarray:
                     
                     # Prüfe ob beide Punkte im Frame sind
                     if 0 <= x1 < w and 0 <= y1 < h and 0 <= x2 < w and 0 <= y2 < h:
-                        cv2.line(frame, (x1, y1), (x2, y2), connection_color, 2)
+                        # Weiße Linien für Skelett-Struktur (werden von Punkten überlagert)
+                        cv2.line(frame, (x1, y1), (x2, y2), (255, 255, 255), 1)
             
-            # Zeichne Landmarks (Kreise)
+            # Zeichne Landmarks (Kreise) - NACH Linien für sichtbaren Überlagerer-Effekt
             for landmark_idx, landmark in enumerate(hand_landmarks):
                 x = int(landmark.x * w)
                 y = int(landmark.y * h)
@@ -179,6 +182,400 @@ def draw_landmarks_on_frame(frame: np.ndarray, hands_result) -> np.ndarray:
     
     except Exception as e:
         logger.warning(f"Fehler beim Zeichnen von Landmarks: {e}")
+    
+    return frame
+
+
+def draw_incircle_debug(
+    frame: np.ndarray,
+    hand_states: dict,
+    w: int = None,
+    h: int = None
+) -> np.ndarray:
+    """
+    Zeichne den Inkreis-Debug-Kreis auf dem Frame
+    
+    Der Inkreis ist der größte Kreis der INNERHALB der Hand liegt:
+    - Finger INNERHALB = gestreckt
+    - Finger AUSSERHALB = gebeugt
+    
+    Args:
+        frame: OpenCV BGR image
+        hand_states: Hand-States mit incircle_center und incircle_radius
+        w, h: Frame-Breite und -Höhe (auto-detect wenn None)
+    
+    Returns:
+        Frame mit gezeichnetem Kreis
+    """
+    if w is None or h is None:
+        h, w = frame.shape[:2]
+    
+    try:
+        for hand_side, hand_state in hand_states.items():
+            incircle_center = hand_state.get('incircle_center')
+            incircle_radius = hand_state.get('incircle_radius')
+            
+            if incircle_center is None or incircle_radius is None:
+                continue
+            
+            # Konvertiere normalisierte Koordinaten (0-1) zu Pixel
+            cx = int(incircle_center[0] * w)
+            cy = int(incircle_center[1] * h)
+            radius_px = int(incircle_radius * w)  # Nutze w als Referenz
+            
+            # Farbe je nach Hand
+            circle_color = (255, 0, 0) if hand_side == "left" else (0, 255, 0)  # Blau oder Grün
+            
+            # Zeichne Inkreis-Outline (solid line)
+            cv2.circle(frame, (cx, cy), radius_px, circle_color, 2)
+            
+            # Zeichne Mittelpunkt (Inzentrum)
+            cv2.circle(frame, (cx, cy), 5, circle_color, -1)
+            
+            # Debug-Text
+            text = f"{hand_side} incircle: r={radius_px}px"
+            cv2.putText(
+                frame, text, (cx - 50, cy - radius_px - 10),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, circle_color, 1
+            )
+    
+    except Exception as e:
+        logger.warning(f"Fehler beim Zeichnen des Inkreises: {e}")
+    
+    return frame
+
+
+def draw_incircle_finger_status(
+    frame: np.ndarray,
+    hand_states: dict
+) -> np.ndarray:
+    """
+    Zeichne detaillierte Inkreis-Status für jeden Finger
+    
+    Zeigt für jeden Finger:
+    - INSIDE (BENT) = Gebeugt (Spitze drinnen im Inkreis) - Rot
+    - OUTSIDE (STRAIGHT) = Gestreckt (Spitze draußen vom Inkreis) - Grün
+    
+    Args:
+        frame: OpenCV BGR image
+        hand_states: Hand-States mit bent_fingers Info
+    
+    Returns:
+        Frame mit Finger-Status
+    """
+    if not hand_states:
+        return frame
+    
+    try:
+        h, w = frame.shape[:2]
+        
+        # Alle Finger in Reihenfolge
+        finger_names = ['thumb', 'index', 'middle', 'ring', 'pinky']
+        
+        y_offset = 20
+        for hand_side, hand_state in hand_states.items():
+            bent_fingers = hand_state.get('bent_fingers', [])
+            
+            # Panel-Hintergrund
+            panel_width = 250
+            panel_height = 140
+            x_pos = w - panel_width - 20
+            y_pos = h - panel_height - 20
+            
+            cv2.rectangle(frame, (x_pos, y_pos), (x_pos + panel_width, y_pos + panel_height), (20, 20, 20), -1)
+            cv2.rectangle(frame, (x_pos, y_pos), (x_pos + panel_width, y_pos + panel_height), (100, 100, 100), 2)
+            
+            # Titel
+            title_text = f"INCIRCLE STATUS ({hand_side})"
+            cv2.putText(
+                frame, title_text, (x_pos + 10, y_pos + 25),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1
+            )
+            
+            # Finger-Status
+            for i, finger_name in enumerate(finger_names):
+                # Bestimme Status
+                is_bent = finger_name in bent_fingers
+                status_text = "INSIDE (BENT)" if is_bent else "OUTSIDE (STRAIGHT)"
+                status_color = (0, 0, 255) if is_bent else (0, 255, 0)  # Rot oder Grün
+                
+                # Finger-Name + Status
+                label = f"{finger_name.upper()[:3]}: {status_text}"
+                cv2.putText(
+                    frame, label, (x_pos + 10, y_pos + 50 + i * 18),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, status_color, 1
+                )
+    
+    except Exception as e:
+        logger.warning(f"Fehler beim Zeichnen des Finger-Status: {e}")
+    
+    return frame
+
+
+def draw_interactive_debug(
+    frame: np.ndarray,
+    hand_states: dict,
+    detected_position: int = None,
+    active_chords: dict = None,
+    root_note: str = "C"
+) -> np.ndarray:
+    """
+    Zeichne Debug-Info für Interactive Mode
+    - Erkannte Position (1-7)
+    - Aktive Akkorde
+    - Finger-Status
+    
+    Args:
+        frame: OpenCV BGR image
+        hand_states: Hand-States von camera
+        detected_position: Erkannte Position (1-7) oder None
+        active_chords: Dict mit aktiven Akkorden
+        root_note: Aktuelle Tonart
+    
+    Returns:
+        Frame mit Debug-Info
+    """
+    if not hand_states:
+        return frame
+    
+    try:
+        h, w = frame.shape[:2]
+        
+        # Background panel für Lesbarkeit
+        cv2.rectangle(frame, (10, 10), (400, 280), (0, 0, 0), -1)
+        cv2.rectangle(frame, (10, 10), (400, 280), (200, 200, 200), 2)
+        
+        y_pos = 40
+        line_height = 30
+        
+        # Titel
+        cv2.putText(
+            frame,
+            f"INTERACTIVE MODE DEBUG - {root_note}",
+            (20, y_pos),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (0, 255, 255),
+            2
+        )
+        
+        y_pos += line_height
+        
+        # Erkannte Position
+        if detected_position is not None:
+            color = (0, 255, 0) if detected_position > 0 else (0, 0, 255)
+            cv2.putText(
+                frame,
+                f"Position erkannt: {detected_position} / 7",
+                (20, y_pos),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.75,
+                color,
+                2
+            )
+        else:
+            cv2.putText(
+                frame,
+                "Position: KEINE",
+                (20, y_pos),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.75,
+                (0, 0, 255),
+                2
+            )
+        
+        y_pos += line_height
+        
+        # Finger-Status (aus linker Hand)
+        if 'left' in hand_states:
+            states = hand_states['left'].get('states', {})
+            
+            # Zeige welche Finger gestreckt sind
+            straight_fingers = []
+            for finger, state in states.items():
+                # Gestreckt = READY oder RELEASING
+                if state in ["READY", "RELEASING"]:
+                    straight_fingers.append(finger[:3].upper())
+            
+            status_text = "Gestreckt: " + ", ".join(straight_fingers) if straight_fingers else "Gestreckt: KEINE"
+            cv2.putText(
+                frame,
+                status_text,
+                (20, y_pos),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (100, 200, 255),
+                1
+            )
+        
+        y_pos += line_height
+        
+        # Aktive Akkorde
+        if active_chords and active_chords.get("left"):
+            midi_notes = active_chords["left"]
+            chord_text = f"Akkord (MIDI): {midi_notes}"
+            cv2.putText(
+                frame,
+                chord_text,
+                (20, y_pos),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 255, 100),
+                1
+            )
+        else:
+            cv2.putText(
+                frame,
+                "Akkord: -",
+                (20, y_pos),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (100, 100, 100),
+                1
+            )
+        
+        y_pos += line_height
+        
+        # Position-Legende
+        cv2.putText(
+            frame,
+            "Pos 1:IND  2:IND+MID  3:IND+MID+RIN",
+            (20, y_pos),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (150, 150, 150),
+            1
+        )
+        y_pos += 20
+        cv2.putText(
+            frame,
+            "4:IND+MID+RIN+PIN  5:ALL  6:IND+PIN  7:IND+PIN+THU",
+            (20, y_pos),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (150, 150, 150),
+            1
+        )
+        
+    except Exception as e:
+        logger.warning(f"Fehler beim Zeichnen Interactive Debug: {e}")
+    
+    return frame
+
+
+def draw_finger_states_on_frame(frame: np.ndarray, hand_states: dict) -> np.ndarray:
+    """
+    Zeichne Finger-Beugung States auf Frame in 2 Spalten
+    Links: Linke Hand | Rechts: Rechte Hand
+    
+    Args:
+        frame: OpenCV BGR image
+        hand_states: Dict mit Hand-States von camera.current_hand_states
+        
+    Returns:
+        Frame mit gezeichneten Finger-States
+    """
+    if not hand_states:
+        return frame
+    
+    try:
+        h, w = frame.shape[:2]
+        y_start = 120
+        left_col_x = 20
+        right_col_x = w // 2 + 20
+        line_height = 25
+        
+        # Finger-Abkürzungen
+        finger_abbrev = {
+            'thumb': 'THU',
+            'index': 'IND',
+            'middle': 'MID',
+            'ring': 'RIN',
+            'pinky': 'PIN'
+        }
+        
+        # Zeichne LINKE HAND (linke Spalte)
+        if 'left' in hand_states:
+            hand_state = hand_states['left']
+            hand_color = (255, 0, 0)  # Blau
+            
+            cv2.putText(
+                frame,
+                "LINKE HAND",
+                (left_col_x, y_start),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.9,
+                hand_color,
+                2
+            )
+            
+            states_text = hand_state.get('states', {})
+            triggered = hand_state.get('triggered_fingers', [])
+            
+            for i, (finger_name, abbrev) in enumerate(finger_abbrev.items()):
+                if finger_name in states_text:
+                    state = states_text[finger_name]
+                    
+                    # Farbe: Orange wenn triggered/held
+                    if finger_name in triggered or state in ['TRIGGERED', 'HELD']:
+                        finger_color = (0, 165, 255)  # Orange
+                    else:
+                        finger_color = (200, 200, 200)  # Grau
+                    
+                    text = f"{abbrev}: {state}"
+                    y_pos = y_start + (i + 1) * line_height
+                    cv2.putText(
+                        frame,
+                        text,
+                        (left_col_x, y_pos),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.65,
+                        finger_color,
+                        1
+                    )
+        
+        # Zeichne RECHTE HAND (rechte Spalte)
+        if 'right' in hand_states:
+            hand_state = hand_states['right']
+            hand_color = (0, 255, 0)  # Grün
+            
+            cv2.putText(
+                frame,
+                "RECHTE HAND",
+                (right_col_x, y_start),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.9,
+                hand_color,
+                2
+            )
+            
+            states_text = hand_state.get('states', {})
+            triggered = hand_state.get('triggered_fingers', [])
+            
+            for i, (finger_name, abbrev) in enumerate(finger_abbrev.items()):
+                if finger_name in states_text:
+                    state = states_text[finger_name]
+                    
+                    # Farbe: Orange wenn triggered/held
+                    if finger_name in triggered or state in ['TRIGGERED', 'HELD']:
+                        finger_color = (0, 165, 255)  # Orange
+                    else:
+                        finger_color = (200, 200, 200)  # Grau
+                    
+                    text = f"{abbrev}: {state}"
+                    y_pos = y_start + (i + 1) * line_height
+                    cv2.putText(
+                        frame,
+                        text,
+                        (right_col_x, y_pos),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.65,
+                        finger_color,
+                        1
+                    )
+        
+    except Exception as e:
+        logger.warning(f"Fehler beim Zeichnen von Finger-States: {e}")
     
     return frame
 
@@ -216,6 +613,12 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(config.WINDOW_TITLE)
         self.setGeometry(100, 100, config.WINDOW_WIDTH, config.WINDOW_HEIGHT)
 
+        # Config
+        self.config = config
+
+        # Game State (zentrale Logik)
+        self.game_state = init_game_state()
+
         # Camera Handler
         self.camera = None
         self.use_mock_camera = False
@@ -230,6 +633,8 @@ class MainWindow(QMainWindow):
         self.start_button = None
         self.stop_button = None
         self.volume_slider = None
+        self.mode_combo = None
+        self.root_note_combo = None
 
         # Timer für Frame-Updates
         self.timer = QTimer()
@@ -239,6 +644,10 @@ class MainWindow(QMainWindow):
         self._init_ui()
         self._init_camera()
         self._init_audio()
+
+        # Auto-Start Kamera wenn konfiguriert
+        if config.CAMERA_AUTO_START:
+            QTimer.singleShot(500, self._on_start_clicked)  # 500ms verzögert
 
     def _init_ui(self) -> None:
         """Initialisiere UI-Elemente"""
@@ -255,6 +664,30 @@ class MainWindow(QMainWindow):
         self.camera_label.setText("Kamera wird initialisiert...")
         self.camera_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         main_layout.addWidget(self.camera_label)
+
+        # Settings Layout (Modus, Tonart - oben rechts)
+        settings_layout = QHBoxLayout()
+        settings_layout.addStretch()  # Spacing nach links
+        
+        # Mode Dropdown
+        settings_layout.addWidget(QLabel("Modus:"))
+        self.mode_combo = QComboBox()
+        for mode in GameMode:
+            self.mode_combo.addItem(mode.value)
+        self.mode_combo.setCurrentText(GameMode.INTERACTIVE.value)  # DEFAULT: Interactive
+        self.mode_combo.currentTextChanged.connect(self._on_mode_changed)
+        settings_layout.addWidget(self.mode_combo)
+        
+        # Root Note Dropdown
+        settings_layout.addWidget(QLabel("Tonart:"))
+        self.root_note_combo = QComboBox()
+        for note in ALL_ROOT_NOTES:
+            self.root_note_combo.addItem(note)
+        self.root_note_combo.setCurrentText("C")
+        self.root_note_combo.currentTextChanged.connect(self._on_root_note_changed)
+        settings_layout.addWidget(self.root_note_combo)
+        
+        main_layout.addLayout(settings_layout)
 
         # Control Layout
         control_layout = QHBoxLayout()
@@ -371,7 +804,7 @@ class MainWindow(QMainWindow):
             self._set_status(f"❌ Fehler: {e}", "red")
 
     def _update_frame(self) -> None:
-        """Update Frame-Anzeige mit Hand-Landmarks"""
+        """Update Frame-Anzeige mit Hand-Landmarks und Finger-States"""
         try:
             # Hole Frame + Hand-Tracking Ergebnisse
             if hasattr(self.camera, 'get_frame_with_hands'):
@@ -385,6 +818,30 @@ class MainWindow(QMainWindow):
                 # Zeichne Landmarks auf Frame
                 if hands is not None:
                     frame = draw_landmarks_on_frame(frame, hands)
+                
+                # Zeichne Finger-States (von camera.current_hand_states)
+                if hasattr(self.camera, 'current_hand_states'):
+                    frame = draw_finger_states_on_frame(frame, self.camera.current_hand_states)
+                    
+                    # DEBUG: Zeichne Inkreis-Kreis für Finger-Erkennung
+                    if self.config.SHOW_INCIRCLE_DEBUG:
+                        frame = draw_incircle_debug(frame, self.camera.current_hand_states)
+                        frame = draw_incircle_finger_status(frame, self.camera.current_hand_states)
+                    
+                    # DEBUG: Interactive Mode Info anzeigen
+                    if self.game_state.mode == GameMode.INTERACTIVE:
+                        status = self.game_state.get_status()
+                        frame = draw_interactive_debug(
+                            frame,
+                            self.camera.current_hand_states,
+                            detected_position=status.get("interactive_position"),
+                            active_chords=status.get("active_chords"),
+                            root_note=self.game_state.root_note
+                        )
+                    
+                    # ===== ZENTRALE LOGIK: Hand-States an GameState übergeben =====
+                    for hand_side, hand_state in self.camera.current_hand_states.items():
+                        self.game_state.process_hand_state(hand_side, hand_state)
                 
                 self.camera_label.set_image_from_cv(frame)
         except Exception as e:
@@ -426,6 +883,25 @@ class MainWindow(QMainWindow):
             logger.info(f"Test Akkord: {note_names}")
         except Exception as e:
             logger.error(f"Fehler beim Abspielen des Akkords: {e}")
+
+    def _on_mode_changed(self, mode_value: str) -> None:
+        """Modus-Dropdown gewechselt"""
+        try:
+            mode = GameMode(mode_value)
+            self.game_state.set_mode(mode)
+            self._set_status(f"📋 Modus: {mode_value}", "green")
+            logger.info(f"Modus gewechselt: {mode_value}")
+        except Exception as e:
+            logger.error(f"Fehler beim Wechsel des Modus: {e}")
+
+    def _on_root_note_changed(self, note: str) -> None:
+        """Tonart-Dropdown gewechselt"""
+        try:
+            self.game_state.set_root_note(note)
+            self._set_status(f"🎵 Tonart: {note}", "green")
+            logger.info(f"Tonart gewechselt: {note}")
+        except Exception as e:
+            logger.error(f"Fehler beim Wechsel der Tonart: {e}")
 
     @staticmethod
     def _midi_to_note_name(midi_note: int) -> str:

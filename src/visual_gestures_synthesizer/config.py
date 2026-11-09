@@ -9,7 +9,7 @@ Enthält:
 """
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List
 
 
@@ -27,12 +27,13 @@ class Config:
     CAMERA_ID: int = 0  # Default Webcam
     CAMERA_MIRROR: bool = True  # Horizontal flip
     FRAME_SKIP: int = 1  # Process every N frames
+    CAMERA_AUTO_START: bool = True  # Kamera automatisch beim Start anschalten
 
     # Audio
     SAMPLE_RATE: int = 44100
     CHUNK_SIZE: int = 2048
     AUDIO_ENABLED: bool = True
-    MASTER_VOLUME: float = 0.7
+    MASTER_VOLUME: float = 0.2  # 20% - Lautstärke einstellen hier (0.0-1.0)
 
     # Hand Tracking (MediaPipe)
     MIN_CONFIDENCE: float = 0.5
@@ -47,6 +48,67 @@ class Config:
     DEFAULT_KEY: str = "C"  # Tonika
     DEFAULT_MODE: str = "scale_chords"  # scale_chords, piano, gesture
     SCALE_TYPE: str = "major"  # major, minor
+
+    # =========================================================================
+    # KALIBRIERUNG: Umkreis-Erkennung für Finger Bent/Straight
+    # =========================================================================
+    # Diese Parameter steuern die Erkennung, ob ein Finger gestreckt oder gebeugt ist
+    # Ändere diese Werte um die Erkennung anzupassen!
+    
+    # === INKREIS-MITTELPUNKT: Welche 3 Landmarks definieren das Inzentrum? ===
+    # Der Inkreis ist der größte Kreis der INNERHALB der Hand liegt
+    # Landmarks: 0=WRIST, 2=THUMB_MCP, 5=INDEX_MCP, 9=MIDDLE_MCP, 13=RING_MCP, 17=PINKY_MCP
+    INCIRCLE_CENTER_LANDMARKS: List[int] = field(default_factory=lambda: [2, 5, 17])  # THUMB_MCP, INDEX_MCP, PINKY_MCP  
+    
+    # === INKREIS-SKALIERUNG: Wie wird der Radius skaliert? ===
+    # Der berechnete Inradius wird mit diesem Faktor multipliziert
+    # 1.0 = exakter Inradius (KALIBRIERUNGS-BASELINE)
+    # > 1.0 = größer (toleranter, mehr INSIDE)
+    # < 1.0 = kleiner (strenger, mehr OUTSIDE)
+    INCIRCLE_RADIUS_SCALE: float = 1.0  # BASELINE - Langsam anpassen wenn nötig
+    
+    # === FINGER-SPITZEN: Welche Landmarks sind die Finger-Spitzen? ===
+    # Wenn diese Landmarks außerhalb des Kreises sind → Finger gestreckt
+    # Wenn innerhalb → Finger gebeugt
+    FINGER_TIP_LANDMARKS: Dict[str, int] = field(default_factory=lambda: {
+        'thumb': 4,      # THUMB_TIP
+        'index': 8,      # INDEX_FINGER_TIP
+        'middle': 12,    # MIDDLE_FINGER_TIP
+        'ring': 16,      # RING_FINGER_TIP
+        'pinky': 20,     # PINKY_TIP
+    })
+    
+    # === DEBUG-VISUALISIERUNG: Zeige den Kreis auf der UI? ===
+    SHOW_INCIRCLE_DEBUG: bool = True  # Kreis zeichnen bei DEBUG
+    
+    # === RADIUS: Distanz vom Mittelpunkt zu welchem Punkt? ===
+    # Radius = Distanz vom Mittelpunkt zum Midpoint zwischen diesen 2 Landmarks
+    # Landmarkpaare: [2,3]=THUMB, [6,7]=INDEX, [10,11]=MIDDLE, [14,15]=RING, [18,19]=PINKY
+    RADIUS_REFERENCE_LANDMARKS: List[int] = field(default_factory=lambda: [2, 3])  # THUMB_MCP und THUMB_IP (Daumen)
+    
+    # === RADIUS-SKALIERUNG ===
+    # Multiplikator für den berechneten Radius
+    # < 1.0  = kleinerer Kreis (strikter, mehr Finger als gestreckt erkannt)
+    # = 1.0  = normaler Radius (standard)
+    # > 1.0  = größerer Kreis (lockerer, mehr Finger als gebeugt erkannt)
+    RADIUS_MULTIPLIER: float = 1.0  # Probier: 0.85, 0.9, 1.0, 1.1, 1.2
+    
+    # === BENT/STRAIGHT VERGLEICH ===
+    # Wenn tip_dist <= (radius * BENT_THRESHOLD_MULTIPLIER) → GEBEUGT
+    # Wenn tip_dist > (radius * BENT_THRESHOLD_MULTIPLIER) → GESTRECKT
+    BENT_THRESHOLD_MULTIPLIER: float = 1.0  # Probier: 0.8, 0.9, 1.0, 1.1
+    
+    # === STATE-MACHINE DEBOUNCING ===
+    # Verhindert Flattern (mehrfaches Triggern)
+    BEND_DEBOUNCE_TIME: float = 0.05  # Sekunden (50ms) - Zeit bis TRIGGERED
+    RELEASE_LOCK_TIME: float = 0.1    # Sekunden (100ms) - Sperre nach Release
+    
+    # =========================================================================
+    # DEBUG: Visualisierung
+    # =========================================================================
+    SHOW_DETECTION_CIRCLE: bool = True  # Zeige Umkreis auf Frame
+    SHOW_INTERACTIVE_DEBUG: bool = True  # Zeige Debug-Info für Positionen
+    SHOW_FINGER_STATES: bool = True     # Zeige Finger-States (READY/TRIGGERED/HELD)
 
     # Finger Mapping (für Scale Chords in C-Dur)
     # Roman numerals: I, ii, iii, IV, V, vi, vii°
