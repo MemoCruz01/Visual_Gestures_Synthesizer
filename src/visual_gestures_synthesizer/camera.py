@@ -6,6 +6,7 @@ Verantwortlich für:
 - Frame-Erfassung
 - Bildbearbeitung (spiegeln, skalieren)
 - Hand-Tracking mit MediaPipe
+- Finger-Beugung Erkennung & State-Machine
 - Fehlerbehandlung
 """
 
@@ -13,13 +14,14 @@ import cv2
 import threading
 import queue
 import logging
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, List, Dict
 import numpy as np
 import os
 import urllib.request
 from pathlib import Path
 
 from .config import config
+from .finger_detection import HandTracker
 
 # MediaPipe Imports
 try:
@@ -173,14 +175,19 @@ class CameraHandler:
         self.frame_queue = queue.Queue(maxsize=2)
         self.thread = None
         self.current_frame = None
-        self.current_hands = None  # ← Hand-Tracking Ergebnisse
+        self.current_hands = None  # ← Hand-Tracking Ergebnisse (MediaPipe)
+        self.current_hand_states = {}  # ← Finger-Beugungs States
         self.frame_count = 0
         self.start_time_ms = None  # ← Für VIDEO-mode Zeitstempel
         
-        # Hand Landmarker
+        # Hand Landmarker (MediaPipe)
         self.landmarker = None
         if MEDIAPIPE_AVAILABLE:
             self.landmarker = _load_hand_landmarker()
+        
+        # Finger-Beugung State-Machines (eine pro Hand)
+        self.left_hand_tracker = HandTracker("left")
+        self.right_hand_tracker = HandTracker("right")
 
     def initialize(self) -> bool:
         """
@@ -256,6 +263,8 @@ class CameraHandler:
 
             # Hand-Tracking (VIDEO-Mode mit monoton steigenden Zeitstempeln)
             hands = None
+            hand_states = {}
+            
             if self.landmarker is not None:
                 try:
                     # Berechne Zeitstempel (monoton steigend in ms)
@@ -270,6 +279,33 @@ class CameraHandler:
                     # Detect hands (VIDEO-mode)
                     mp_image = Image(image_format=ImageFormat.SRGB, data=rgb_frame)
                     hands = self.landmarker.detect_for_video(mp_image, timestamp_ms)
+                    
+                    # Process hand landmarks für Finger-Beugung Erkennung
+                    if hands and hands.hand_landmarks:
+                        # Prüfe Handedness (Left/Right)
+                        # handedness ist eine Liste von Objekten mit category_name
+                        for hand_idx, landmarks in enumerate(hands.hand_landmarks):
+                            try:
+                                # Bestimme Left/Right
+                                hand_side = "left"  # Default
+                                if hasattr(hands, 'handedness') and hands.handedness:
+                                    handedness_list = hands.handedness[hand_idx]
+                                    if isinstance(handedness_list, list) and len(handedness_list) > 0:
+                                        handedness_obj = handedness_list[0]
+                                        if hasattr(handedness_obj, 'category_name'):
+                                            hand_side = handedness_obj.category_name.lower()
+                                    elif hasattr(handedness_list, 'category_name'):
+                                        hand_side = handedness_list.category_name.lower()
+                                
+                                # Wähle korrekten Tracker
+                                tracker = self.left_hand_tracker if hand_side == "left" else self.right_hand_tracker
+                                
+                                # Verarbeite Hand mit Finger-Detection
+                                hand_state = tracker.process_hand(landmarks)
+                                hand_states[hand_side] = hand_state
+                                
+                            except Exception as e:
+                                logger.debug(f"Fehler bei Finger-Detection: {e}")
                     
                 except Exception as e:
                     logger.warning(f"Hand-Tracking Fehler: {e}")
@@ -287,6 +323,7 @@ class CameraHandler:
 
             self.current_frame = frame
             self.current_hands = hands  # ← Speichere Hand-Tracking Ergebnisse
+            self.current_hand_states = hand_states  # ← Speichere Finger-States
             self.frame_count += 1
 
     def get_frame(self) -> Optional[np.ndarray]:
