@@ -97,12 +97,17 @@ class GameState:
         # Interactive Mode: Tracking der erkannten Positionen
         self.interactive_last_position: Dict[str, Optional[int]] = {
             "left": None,
-            "right": None
+            "right": None,
+            "right_last_degree": None  # Speichert den zuletzt gespielten Grad
         }
         self.interactive_position_stable_time: Dict[str, float] = {
             "left": 0.0,
             "right": 0.0
         }
+        
+        # Interactive Mode: State des rechten Zeigeringers
+        # Wird verwendet um zu erkennen WANN der Finger gestreckt/gebeugt WIRD (Übergänge)
+        self.interactive_right_index_was_straight: bool = False
         
         # Debugging
         self.last_triggered: Dict[str, str] = {}  # {"left": "index", ...}
@@ -227,56 +232,121 @@ class GameState:
         finger_states: Dict[str, str]
     ) -> None:
         """
-        INTERACTIVE Mode: Linke Hand steuert 7 Positionen → 7 Akkord-Grade
+        INTERACTIVE Mode: Getrennte Kontrolle für beide Hände
         
-        Die 7 Positionen sind eindeutig durch Finger-Kombinationen definiert:
-        1. Nur Index gestreckt → Grad I
-        2. Index + Middle gestreckt → Grad II
-        3. Index + Middle + Ring gestreckt → Grad III
-        4. Index + Middle + Ring + Pinky gestreckt → Grad IV
-        5. Alle 5 Finger gestreckt → Grad V
-        6. Index + Pinky gestreckt → Grad VI
-        7. Index + Pinky + Thumb gestreckt → Grad VII
+        LINKE HAND: Bestimmt den Akkord (7 Positionen = 7 Akkord-Grade)
+        - Position 1: Nur Index → Grad I
+        - Position 2: Index + Middle → Grad II
+        - Position 3: Index + Middle + Ring → Grad III
+        - Position 4: 4 Finger (ohne Pinky) → Grad IV
+        - Position 5: Alle 5 Finger → Grad V (z.B. G-Dur in C-Dur)
+        - Position 6: Index + Pinky → Grad VI
+        - Position 7: Index + Pinky + Thumb → Grad VII
+        
+        RECHTE HAND: Steuert wann der Akkord gespielt wird
+        - Zeigefinger GESTRECKT → Akkord an (basierend auf linker Hand Grad)
+        - Zeigefinger GEBEUGT → Akkord aus
         
         Args:
             hand_side: "left" oder "right"
             finger_states: Dict[str, str] (Finger → State: "READY", "TRIGGERED", "HELD", "RELEASING")
         """
-        # Nur linke Hand verarbeiten
-        if hand_side != "left":
-            return
+        if hand_side == "left":
+            # ===================================================================
+            # LINKE HAND: Erkenne Position und speichere Akkord-Grad
+            # ===================================================================
+            position = self._detect_interactive_position(finger_states)
+            
+            if position is not None:
+                # Position erkannt und ist neu/unterschiedlich → speichere
+                if self.interactive_last_position["left"] != position:
+                    self.interactive_last_position["left"] = position
+                    logger.info(
+                        f"INTERACTIVE: Linke Hand Position {position} erkannt "
+                        f"→ Grad {position} (Akkord-Auswahl)"
+                    )
+                    
+                    # Wenn gerade ein Akkord gespielt wird, stoppe ihn kurz
+                    # damit der neue Akkord deutlich wahrgenommen wird
+                    if self.active_chords.get("right"):
+                        self.audio_player.stop_all()
+                        # Wenn rechter Zeigefinger noch gestreckt ist,
+                        # spiele den neuen Akkord sofort
+                        # (wird in der nächsten _process_interactive_mode(right) Aufrufe erledigt)
         
-        # Erkenne aktuelle Position
-        detected_position = self._detect_interactive_position(finger_states)
-        
-        if detected_position is None:
-            # Keine gültige Position erkannt
-            if self.interactive_last_position[hand_side] is not None:
-                # Position verloren → Stoppe Akkord
-                logger.debug(f"INTERACTIVE: Position verloren (war {self.interactive_last_position[hand_side]})")
-                self.active_chords[hand_side] = []
+        elif hand_side == "right":
+            # ===================================================================
+            # RECHTE HAND: MASTER VOLUME SCHALTER für Akkord
+            # Der Akkord spielt solange der Zeigefinger gestreckt ist!
+            # ===================================================================
+            index_state = finger_states.get("index", "READY")
+            is_index_straight = index_state in ["READY", "RELEASING"]
+            
+            # Verwende den Grad der linken Hand (Default: Grad I wenn nichts definiert)
+            degree = self.interactive_last_position.get("left") or 1
+            
+            # Erkenne Übergänge: gestreckt → gebeugt oder gebeugt → gestreckt
+            if is_index_straight and not self.interactive_right_index_was_straight:
+                # ÜBERGANG: Finger wurde GERADE GESTRECKT
+                # → Starte Akkord (kontinuierlich bis Beugung)
+                logger.info(
+                    f"INTERACTIVE: Rechter Zeigefinger GESTRECKT (START) "
+                    f"→ Spiele Grad {degree} Akkord kontinuierlich"
+                )
+                
+                midi_chord = self.music_theory.get_diatonic_chord(degree, num_notes=3)
+                self.active_chords["right"] = midi_chord
+                self.audio_player.play_chord_continuous(midi_chord)
+                
+            elif not is_index_straight and self.interactive_right_index_was_straight:
+                # ÜBERGANG: Finger wurde GERADE GEBEUGT
+                # → Stoppe Akkord sofort (Master Volume OFF)
+                logger.info(
+                    f"INTERACTIVE: Rechter Zeigefinger GEBEUGT (STOP) → Akkord stoppen"
+                )
+                self.active_chords["right"] = []
                 self.audio_player.stop_all()
-            self.interactive_last_position[hand_side] = None
-            return
-        
-        # Position stabil? Nur bei Wechsel spielen
-        if detected_position != self.interactive_last_position[hand_side]:
-            logger.info(f"INTERACTIVE: Position {detected_position} erkannt → Grad {detected_position}")
             
-            # Position → Grad (1-7)
-            degree = detected_position - 1  # Position 1 → Degree 0 (API nutzt 1-7)
+            elif is_index_straight and self.interactive_right_index_was_straight:
+                # Finger bleibt GESTRECKT: Prüfe ob linke Hand Position geändert hat
+                current_left_degree = self.interactive_last_position.get("left") or 1
+                last_played_degree = self.interactive_last_position.get("right_last_degree")
+                
+                if current_left_degree != last_played_degree:
+                    # Akkord-Grad hat sich geändert während Finger gestreckt war
+                    # → Spiele neuen Akkord kontinuierlich
+                    logger.info(
+                        f"INTERACTIVE: Position-Wechsel zu Grad {current_left_degree} "
+                        f"→ Neuer Akkord kontinuierlich"
+                    )
+                    midi_chord = self.music_theory.get_diatonic_chord(
+                        current_left_degree, num_notes=3
+                    )
+                    self.active_chords["right"] = midi_chord
+                    self.audio_player.play_chord_continuous(midi_chord)
+                    self.interactive_last_position["right_last_degree"] = current_left_degree
             
-            # Grad → Akkord (diatonisch)
-            midi_chord = self.music_theory.get_diatonic_chord(detected_position, num_notes=3)
-            
-            # Stoppe alten Akkord und starte Neuen
-            self.audio_player.stop_all()
-            self.active_chords[hand_side] = midi_chord
-            self.audio_player.play_chord(midi_chord)
-            
-            # Update: Neue Position aktiv
-            self.interactive_last_position[hand_side] = detected_position
-
+            # Speichere aktuellen Zustand für nächste Iteration
+            self.interactive_right_index_was_straight = is_index_straight
+    
+    # =========================================================================
+    # ZUKÜNFTIG: 7-Positionen Logik (Für erweiterte Interactive Mode Versionen)
+    # =========================================================================
+    # @staticmethod
+    # def _detect_interactive_position_advanced(finger_states: Dict[str, str]) -> Optional[int]:
+    #     """
+    #     ZUKÜNFTIG: Erkenne 7 Positionen für erweiterte Interactive Mode
+    #     
+    #     Position 1: Nur Index gestreckt → Grad I
+    #     Position 2: Index + Middle gestreckt → Grad II
+    #     Position 3: Index + Middle + Ring gestreckt → Grad III
+    #     Position 4: Index + Middle + Ring + Pinky gestreckt → Grad IV
+    #     Position 5: Alle 5 Finger gestreckt → Grad V
+    #     Position 6: Index + Pinky gestreckt → Grad VI
+    #     Position 7: Index + Pinky + Thumb gestreckt → Grad VII
+    #     """
+    #     pass
+    
     @staticmethod
     def _detect_interactive_position(finger_states: Dict[str, str]) -> Optional[int]:
         """

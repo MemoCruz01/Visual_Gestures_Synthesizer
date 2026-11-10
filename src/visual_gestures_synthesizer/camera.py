@@ -35,6 +35,36 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def get_corrected_hand_side(handedness_name: str) -> str:
+    """
+    Korrigiere Handedness basierend auf CAMERA_MIRROR
+    
+    Wenn die Kamera gespiegelt ist (CAMERA_MIRROR=True), sind die Hände invertiert!
+    - MediaPipe sagt "Left" aber es ist tatsächlich rechts (im gespiegelten Bild)
+    - MediaPipe sagt "Right" aber es ist tatsächlich links (im gespiegelten Bild)
+    
+    Args:
+        handedness_name: "Left" oder "Right" (von MediaPipe)
+    
+    Returns:
+        Korrigierte Hand: "left" oder "right"
+    """
+    # Normalisiere zu lowercase
+    hand = handedness_name.lower()
+    
+    # Wenn Kamera NOT gespiegelt: verwende MediaPipe-Wert direkt
+    if not config.CAMERA_MIRROR:
+        return hand
+    
+    # Wenn Kamera gespiegelt: invertiere
+    if hand == "left":
+        return "right"
+    elif hand == "right":
+        return "left"
+    else:
+        return "left"  # Default
+
+
 # ============================================================================
 # MediaPipe Hand Landmarker Model Management
 # ============================================================================
@@ -293,9 +323,10 @@ class CameraHandler:
                                     if isinstance(handedness_list, list) and len(handedness_list) > 0:
                                         handedness_obj = handedness_list[0]
                                         if hasattr(handedness_obj, 'category_name'):
-                                            hand_side = handedness_obj.category_name.lower()
+                                            # Nutze Korrektur-Funktion für CAMERA_MIRROR
+                                            hand_side = get_corrected_hand_side(handedness_obj.category_name)
                                     elif hasattr(handedness_list, 'category_name'):
-                                        hand_side = handedness_list.category_name.lower()
+                                        hand_side = get_corrected_hand_side(handedness_list.category_name)
                                 
                                 # Wähle korrekten Tracker
                                 tracker = self.left_hand_tracker if hand_side == "left" else self.right_hand_tracker

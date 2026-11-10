@@ -465,6 +465,10 @@ class HandTracker:
         - Finger ist GEBEUGT wenn die Spitze INNERHALB des Inkreises ist (nah am Mittelpunkt)
         - Finger ist GESTRECKT wenn die Spitze AUSSERHALB des Inkreises ist (weit weg)
         
+        Kalibrierungs-Parameter:
+        - INCIRCLE_RADIUS_SCALE: Skaliert den Kreis (< 1.0 = strikter, > 1.0 = lockerer)
+        - BENT_THRESHOLD_MULTIPLIER: Skaliert den Vergleichs-Threshold
+        
         Args:
             hand_landmarks: 21 Landmarks von MediaPipe
             finger_name: 'thumb', 'index', 'middle', 'ring', 'pinky'
@@ -482,10 +486,24 @@ class HandTracker:
         
         tip_landmark = hand_landmarks[tip_landmark_id]
         
-        # Prüfe ob Spitze innerhalb des Inkreises
-        is_inside = is_landmark_inside_circle(tip_landmark, self.incircle_center, self.incircle_radius)
+        # Berechne Distanz zur Spitze
+        dist = distance_between_points(tip_landmark, self.incircle_center)
         
-        # KORREKTE LOGIK: Gebeugt = INNERHALB Inkreis
+        # Wende BENT_THRESHOLD_MULTIPLIER an: Threshold = radius * multiplier
+        threshold_radius = self.incircle_radius * self.config.BENT_THRESHOLD_MULTIPLIER
+        
+        # Prüfe ob Spitze innerhalb des Thresholds
+        is_inside = dist < threshold_radius
+        
+        # DEBUG: Zeige Distanz und Status
+        debug_status = "INSIDE (BENT)" if is_inside else "OUTSIDE (STRAIGHT)"
+        # Nur erster Finger pro Hand debuggen (zu viel Spam sonst)
+        if finger_name == 'index':
+            logger.debug(
+                f"  {finger_name}: dist={dist:.4f}, radius={self.incircle_radius:.4f}, "
+                f"threshold={threshold_radius:.4f}, ratio={dist/threshold_radius:.2f}, {debug_status}"
+            )
+        
         return is_inside
     
     

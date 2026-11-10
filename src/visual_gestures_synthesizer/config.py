@@ -58,14 +58,15 @@ class Config:
     # === INKREIS-MITTELPUNKT: Welche 3 Landmarks definieren das Inzentrum? ===
     # Der Inkreis ist der größte Kreis der INNERHALB der Hand liegt
     # Landmarks: 0=WRIST, 2=THUMB_MCP, 5=INDEX_MCP, 9=MIDDLE_MCP, 13=RING_MCP, 17=PINKY_MCP
-    INCIRCLE_CENTER_LANDMARKS: List[int] = field(default_factory=lambda: [2, 5, 17])  # THUMB_MCP, INDEX_MCP, PINKY_MCP  
+    INCIRCLE_CENTER_LANDMARKS: List[int] = field(default_factory=lambda: [0, 2, 17])  # THUMB_MCP, INDEX_MCP, PINKY_MCP  
     
     # === INKREIS-SKALIERUNG: Wie wird der Radius skaliert? ===
     # Der berechnete Inradius wird mit diesem Faktor multipliziert
+    # **DIES IST DIE VARIABLE UM DIE KREISGRÖSSZE ZU ÄNDERN!**
     # 1.0 = exakter Inradius (KALIBRIERUNGS-BASELINE)
-    # > 1.0 = größer (toleranter, mehr INSIDE)
-    # < 1.0 = kleiner (strenger, mehr OUTSIDE)
-    INCIRCLE_RADIUS_SCALE: float = 1.0  # BASELINE - Langsam anpassen wenn nötig
+    # < 1.0 = kleinerer Kreis (strikter, mehr Finger als gestreckt erkannt)
+    # > 1.0 = größerer Kreis (lockerer, mehr Finger als gebeugt erkannt)
+    INCIRCLE_RADIUS_SCALE: float = 1.9  # 👈 DIESE ÄNDERN! Probier: 0.85, 0.9, 1.0, 1.1, 1.2
     
     # === FINGER-SPITZEN: Welche Landmarks sind die Finger-Spitzen? ===
     # Wenn diese Landmarks außerhalb des Kreises sind → Finger gestreckt
@@ -81,22 +82,11 @@ class Config:
     # === DEBUG-VISUALISIERUNG: Zeige den Kreis auf der UI? ===
     SHOW_INCIRCLE_DEBUG: bool = True  # Kreis zeichnen bei DEBUG
     
-    # === RADIUS: Distanz vom Mittelpunkt zu welchem Punkt? ===
-    # Radius = Distanz vom Mittelpunkt zum Midpoint zwischen diesen 2 Landmarks
-    # Landmarkpaare: [2,3]=THUMB, [6,7]=INDEX, [10,11]=MIDDLE, [14,15]=RING, [18,19]=PINKY
-    RADIUS_REFERENCE_LANDMARKS: List[int] = field(default_factory=lambda: [2, 3])  # THUMB_MCP und THUMB_IP (Daumen)
-    
-    # === RADIUS-SKALIERUNG ===
-    # Multiplikator für den berechneten Radius
-    # < 1.0  = kleinerer Kreis (strikter, mehr Finger als gestreckt erkannt)
-    # = 1.0  = normaler Radius (standard)
-    # > 1.0  = größerer Kreis (lockerer, mehr Finger als gebeugt erkannt)
-    RADIUS_MULTIPLIER: float = 1.0  # Probier: 0.85, 0.9, 1.0, 1.1, 1.2
-    
     # === BENT/STRAIGHT VERGLEICH ===
     # Wenn tip_dist <= (radius * BENT_THRESHOLD_MULTIPLIER) → GEBEUGT
     # Wenn tip_dist > (radius * BENT_THRESHOLD_MULTIPLIER) → GESTRECKT
-    BENT_THRESHOLD_MULTIPLIER: float = 1.0  # Probier: 0.8, 0.9, 1.0, 1.1
+    # ⚠️ ACHTUNG: Dieser Parameter wird JETZT VERWENDET! (War vorher nicht aktiv)
+    BENT_THRESHOLD_MULTIPLIER: float = 1.5  # Probier: 0.8, 0.9, 1.0, 1.1
     
     # === STATE-MACHINE DEBOUNCING ===
     # Verhindert Flattern (mehrfaches Triggern)

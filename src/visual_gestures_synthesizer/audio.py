@@ -17,6 +17,7 @@ import logging
 import time
 from typing import List, Optional
 from dataclasses import dataclass
+from .config import config
 
 logger = logging.getLogger(__name__)
 
@@ -204,7 +205,7 @@ class AudioPlayer:
         # Audio State
         self.current_audio_buffer = None
         self.current_position = 0
-        self.master_volume = 0.5
+        self.master_volume = config.MASTER_VOLUME  # Initialisiere mit Config-Wert
         self.playing = False
 
         # PyAudio Stream
@@ -212,7 +213,8 @@ class AudioPlayer:
         self.stream = None
 
         logger.info(
-            f"AudioPlayer initialisiert ({sample_rate}Hz, {channels} channels)"
+            f"AudioPlayer initialisiert ({sample_rate}Hz, {channels} channels, "
+            f"Master Volume: {self.master_volume:.2f})"
         )
 
     def initialize(self) -> bool:
@@ -286,6 +288,24 @@ class AudioPlayer:
             command_type="play_chord",
             midi_notes=midi_notes,
             duration=duration,
+        )
+        self.command_queue.put(cmd)
+
+    def play_chord_continuous(self, midi_notes: List[int]) -> None:
+        """
+        Spiele einen Akkord kontinuierlich bis stop_all() aufgerufen wird
+        
+        Ideal für Interactive Mode: Akkord spielt solange rechter Zeigefinger gestreckt ist
+        
+        Args:
+            midi_notes: Liste von MIDI-Noten
+        """
+        # Spiele mit sehr langer Duration (60 Sekunden)
+        # wird gestoppt durch stop_all() wenn Zeigefinger gebeugt wird
+        cmd = AudioCommand(
+            command_type="play_chord",
+            midi_notes=midi_notes,
+            duration=60.0,  # 60 Sekunden - wird von stop_all() unterbrochen
         )
         self.command_queue.put(cmd)
 

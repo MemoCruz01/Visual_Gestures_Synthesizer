@@ -30,10 +30,11 @@ from PySide6.QtCore import Qt, QTimer, QSize
 from PySide6.QtWidgets import QApplication
 
 from .config import config
-from .camera import CameraHandler, MockCamera, MEDIAPIPE_AVAILABLE
+from .camera import CameraHandler, MockCamera, MEDIAPIPE_AVAILABLE, get_corrected_hand_side
 from .audio import get_audio_player, init_audio
 from .music_theory import MusicTheory
 from .app_controller import get_game_state, init_game_state, GameMode, ALL_ROOT_NOTES
+from .calibration import CalibrationDialog
 
 # Optional MediaPipe import für Type Hints
 if MEDIAPIPE_AVAILABLE:
@@ -122,15 +123,21 @@ def draw_landmarks_on_frame(frame: np.ndarray, hands_result) -> np.ndarray:
                 if hasattr(hands_result, 'handedness') and hands_result.handedness:
                     handedness_list = hands_result.handedness[hand_idx]
                     
+                    handedness_name = None
                     # Prüfe ob es eine Liste oder ein Objekt ist
                     if isinstance(handedness_list, list) and len(handedness_list) > 0:
                         handedness_obj = handedness_list[0]
                         if hasattr(handedness_obj, 'category_name'):
-                            is_left = handedness_obj.category_name == "Left"
+                            handedness_name = handedness_obj.category_name
                     elif hasattr(handedness_list, 'category_name'):
-                        is_left = handedness_list.category_name == "Left"
+                        handedness_name = handedness_list.category_name
                     elif hasattr(handedness_list, 'display_name'):
-                        is_left = handedness_list.display_name == "Left"
+                        handedness_name = handedness_list.display_name
+                    
+                    # Korrigiere für CAMERA_MIRROR
+                    if handedness_name:
+                        corrected_hand = get_corrected_hand_side(handedness_name)
+                        is_left = corrected_hand == "left"
             except Exception as e:
                 logger.debug(f"Handedness Fehler (kein großes Problem): {e}")
             
@@ -705,6 +712,12 @@ class MainWindow(QMainWindow):
         self.stop_button.setEnabled(False)
         control_layout.addWidget(self.stop_button)
 
+        # Calibration Button
+        self.calibration_button = QPushButton("⚙️ Kalibrieren")
+        self.calibration_button.clicked.connect(self._on_calibration_clicked)
+        self.calibration_button.setMinimumHeight(40)
+        control_layout.addWidget(self.calibration_button)
+
         # Volume Slider
         self.volume_slider = QSlider(Qt.Orientation.Horizontal)
         self.volume_slider.setMinimum(0)
@@ -712,6 +725,13 @@ class MainWindow(QMainWindow):
         self.volume_slider.setValue(int(config.MASTER_VOLUME * 100))
         self.volume_slider.setMinimumWidth(100)
         self.volume_slider.valueChanged.connect(self._on_volume_changed)
+        
+        # Initialisiere Lautstärke sofort mit Config-Wert
+        # (valueChanged.connect triggert nicht automatisch bei setValue)
+        self.audio_player.set_volume(config.MASTER_VOLUME)
+        volume_percent = int(config.MASTER_VOLUME * 100)
+        logger.info(f"Volume initialisiert: {config.MASTER_VOLUME:.2f} ({volume_percent}%)")
+        
         control_layout.addWidget(QLabel("Lautstärke:"))
         control_layout.addWidget(self.volume_slider)
 
@@ -840,6 +860,16 @@ class MainWindow(QMainWindow):
                         )
                     
                     # ===== ZENTRALE LOGIK: Hand-States an GameState übergeben =====
+                    # Sicherheit: Stoppe Audio wenn NICHT beide Hände erkannt sind
+                    if len(self.camera.current_hand_states) < 2:
+                        # Eine oder beide Hände sind nicht sichtbar
+                        logger.debug(
+                            f"Nur {len(self.camera.current_hand_states)} Hand(en) erkannt "
+                            f"→ Alle Klänge gestoppt"
+                        )
+                        self.game_state.stop_all_notes()
+                    
+                    # Verarbeite erkannte Hände
                     for hand_side, hand_state in self.camera.current_hand_states.items():
                         self.game_state.process_hand_state(hand_side, hand_state)
                 
@@ -902,6 +932,17 @@ class MainWindow(QMainWindow):
             logger.info(f"Tonart gewechselt: {note}")
         except Exception as e:
             logger.error(f"Fehler beim Wechsel der Tonart: {e}")
+
+    def _on_calibration_clicked(self) -> None:
+        """⚙️ Kalibrierungs-Button geklickt - Öffne Dialog"""
+        try:
+            dialog = CalibrationDialog(self)
+            dialog.exec()
+            logger.info("Kalibrierungs-Dialog geschlossen")
+            self._set_status("✅ Kalibrierung abgeschlossen", "green")
+        except Exception as e:
+            logger.error(f"Fehler beim Öffnen des Kalibrierungs-Dialogs: {e}")
+            self._set_status(f"❌ Fehler: {e}", "red")
 
     @staticmethod
     def _midi_to_note_name(midi_note: int) -> str:
